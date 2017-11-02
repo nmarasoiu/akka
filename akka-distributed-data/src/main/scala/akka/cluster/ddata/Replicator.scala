@@ -80,6 +80,7 @@ object ReplicatorSettings {
     new ReplicatorSettings(
       role = roleOption(config.getString("role")),
       gossipInterval = config.getDuration("gossip-interval", MILLISECONDS).millis,
+      gossipLocalDataCenterRatio = config.getDouble("gossip-local-datacenter-ratio"),
       notifySubscribersInterval = config.getDuration("notify-subscribers-interval", MILLISECONDS).millis,
       maxDeltaElements = config.getInt("max-delta-elements"),
       dispatcher = dispatcher,
@@ -129,6 +130,7 @@ object ReplicatorSettings {
 final class ReplicatorSettings(
   val roles:                          Set[String],
   val gossipInterval:                 FiniteDuration,
+  val gossipLocalDataCenterRatio:     Double,
   val notifySubscribersInterval:      FiniteDuration,
   val maxDeltaElements:               Int,
   val dispatcher:                     String,
@@ -145,6 +147,7 @@ final class ReplicatorSettings(
   def this(
     role:                           Option[String],
     gossipInterval:                 FiniteDuration,
+    gossipLocalDataCenterRatio:     Double,
     notifySubscribersInterval:      FiniteDuration,
     maxDeltaElements:               Int,
     dispatcher:                     String,
@@ -156,30 +159,30 @@ final class ReplicatorSettings(
     durablePruningMarkerTimeToLive: FiniteDuration,
     deltaCrdtEnabled:               Boolean,
     maxDeltaSize:                   Int) =
-    this(role.toSet, gossipInterval, notifySubscribersInterval, maxDeltaElements, dispatcher, pruningInterval,
+    this(role.toSet, gossipInterval, gossipLocalDataCenterRatio, notifySubscribersInterval, maxDeltaElements, dispatcher, pruningInterval,
       maxPruningDissemination, durableStoreProps, durableKeys, pruningMarkerTimeToLive, durablePruningMarkerTimeToLive,
       deltaCrdtEnabled, maxDeltaSize)
 
   // For backwards compatibility
   def this(role: Option[String], gossipInterval: FiniteDuration, notifySubscribersInterval: FiniteDuration,
            maxDeltaElements: Int, dispatcher: String, pruningInterval: FiniteDuration, maxPruningDissemination: FiniteDuration) =
-    this(roles = role.toSet, gossipInterval, notifySubscribersInterval, maxDeltaElements, dispatcher, pruningInterval,
+    this(roles = role.toSet, gossipInterval, 0.5, notifySubscribersInterval, maxDeltaElements, dispatcher, pruningInterval,
       maxPruningDissemination, Right(Props.empty), Set.empty, 6.hours, 10.days, true, 200)
 
   // For backwards compatibility
-  def this(role: Option[String], gossipInterval: FiniteDuration, notifySubscribersInterval: FiniteDuration,
+  def this(role: Option[String], gossipInterval: FiniteDuration, gossipLocalDataCenterRatio: Double, notifySubscribersInterval: FiniteDuration,
            maxDeltaElements: Int, dispatcher: String, pruningInterval: FiniteDuration, maxPruningDissemination: FiniteDuration,
            durableStoreProps: Either[(String, Config), Props], durableKeys: Set[String]) =
-    this(role, gossipInterval, notifySubscribersInterval, maxDeltaElements, dispatcher, pruningInterval,
+    this(role, gossipInterval, gossipLocalDataCenterRatio, notifySubscribersInterval, maxDeltaElements, dispatcher, pruningInterval,
       maxPruningDissemination, durableStoreProps, durableKeys, 6.hours, 10.days, true, 200)
 
   // For backwards compatibility
-  def this(role: Option[String], gossipInterval: FiniteDuration, notifySubscribersInterval: FiniteDuration,
+  def this(role: Option[String], gossipInterval: FiniteDuration, gossipLocalDataCenterRatio: Double, notifySubscribersInterval: FiniteDuration,
            maxDeltaElements: Int, dispatcher: String, pruningInterval: FiniteDuration, maxPruningDissemination: FiniteDuration,
            durableStoreProps: Either[(String, Config), Props], durableKeys: Set[String],
            pruningMarkerTimeToLive: FiniteDuration, durablePruningMarkerTimeToLive: FiniteDuration,
            deltaCrdtEnabled: Boolean) =
-    this(role, gossipInterval, notifySubscribersInterval, maxDeltaElements, dispatcher, pruningInterval,
+    this(role, gossipInterval, gossipLocalDataCenterRatio, notifySubscribersInterval, maxDeltaElements, dispatcher, pruningInterval,
       maxPruningDissemination, durableStoreProps, durableKeys, pruningMarkerTimeToLive, durablePruningMarkerTimeToLive,
       deltaCrdtEnabled, 200)
 
@@ -200,6 +203,9 @@ final class ReplicatorSettings(
 
   def withGossipInterval(gossipInterval: FiniteDuration): ReplicatorSettings =
     copy(gossipInterval = gossipInterval)
+
+  def withGossipLocalDataCenterRatio(gossipLocalDataCenterRatio: Double): ReplicatorSettings =
+    copy(gossipLocalDataCenterRatio = gossipLocalDataCenterRatio)
 
   def withNotifySubscribersInterval(notifySubscribersInterval: FiniteDuration): ReplicatorSettings =
     copy(notifySubscribersInterval = notifySubscribersInterval)
@@ -251,6 +257,7 @@ final class ReplicatorSettings(
   private def copy(
     roles:                          Set[String]                     = roles,
     gossipInterval:                 FiniteDuration                  = gossipInterval,
+    gossipLocalDataCenterRatio:     Double                          =gossipLocalDataCenterRatio,
     notifySubscribersInterval:      FiniteDuration                  = notifySubscribersInterval,
     maxDeltaElements:               Int                             = maxDeltaElements,
     dispatcher:                     String                          = dispatcher,
@@ -262,7 +269,8 @@ final class ReplicatorSettings(
     durablePruningMarkerTimeToLive: FiniteDuration                  = durablePruningMarkerTimeToLive,
     deltaCrdtEnabled:               Boolean                         = deltaCrdtEnabled,
     maxDeltaSize:                   Int                             = maxDeltaSize): ReplicatorSettings =
-    new ReplicatorSettings(roles, gossipInterval, notifySubscribersInterval, maxDeltaElements, dispatcher,
+    new ReplicatorSettings(roles, gossipInterval, gossipLocalDataCenterRatio,
+      notifySubscribersInterval, maxDeltaElements, dispatcher,
       pruningInterval, maxPruningDissemination, durableStoreProps, durableKeys,
       pruningMarkerTimeToLive, durablePruningMarkerTimeToLive, deltaCrdtEnabled, maxDeltaSize)
 }
@@ -276,6 +284,8 @@ object Replicator {
     require(
       settings.durableKeys.isEmpty || (settings.durableStoreProps != Right(Props.empty)),
       "durableStoreProps must be defined when durableKeys are defined")
+    require(settings.gossipLocalDataCenterRatio >= 0 && settings.gossipLocalDataCenterRatio <= 1,
+      "gossipLocalDataCenterRatio must be between 0 and 1")
     Props(new Replicator(settings)).withDeploy(Deploy.local).withDispatcher(settings.dispatcher)
   }
 
@@ -1057,7 +1067,7 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
     override val gossipIntervalDivisor = 5
     override def allNodes: Vector[Address] = {
       // TODO optimize, by maintaining a sorted instance variable instead
-      nodes.union(weaklyUpNodes).diff(unreachable).toVector.sorted
+      nodes.union(weaklyUpNodes).diff(unreachable).toVector.map(_.address).sorted
     }
 
     override def maxDeltaSize: Int = settings.maxDeltaSize
@@ -1085,10 +1095,10 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
     } else None
 
   // cluster nodes, doesn't contain selfAddress
-  var nodes: Set[Address] = Set.empty
+  var nodes: Set[Member] = Set.empty
 
   // cluster weaklyUp nodes, doesn't contain selfAddress
-  var weaklyUpNodes: Set[Address] = Set.empty
+  var weaklyUpNodes: Set[Member] = Set.empty
 
   var removedNodes: Map[UniqueAddress, Long] = Map.empty
   // all nodes sorted with the leader first
@@ -1099,7 +1109,7 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
   // for pruning timeouts are based on clock that is only increased when all nodes are reachable
   var previousClockTime = System.nanoTime()
   var allReachableClockTime = 0L
-  var unreachable = Set.empty[Address]
+  var unreachable = Set.empty[Member]
 
   // the actual data
   var dataEntries = Map.empty[KeyId, (DataEnvelope, Digest)]
@@ -1603,7 +1613,7 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
 
   def receiveGossipTick(): Unit = {
     if (fullStateGossipEnabled)
-      selectRandomNode(nodes.union(weaklyUpNodes).toVector) foreach gossipTo
+      selectNodeForGossip(nodes.union(weaklyUpNodes).toVector) foreach gossipTo
   }
 
   def gossipTo(address: Address): Unit = {
@@ -1629,16 +1639,22 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
     }
   }
 
-  def selectRandomNode(addresses: immutable.IndexedSeq[Address]): Option[Address] =
-    if (addresses.isEmpty) None else Some(addresses(ThreadLocalRandom.current nextInt addresses.size))
-
+  def selectNodeForGossip(members: immutable.IndexedSeq[Member]): Option[Address] = {
+    val selectableMembers: immutable.IndexedSeq[Member] =
+      if (ThreadLocalRandom.current.nextDouble <= gossipLocalDataCenterRatio)
+        members.filter(m => m.dataCenter != cluster.selfMember.dataCenter)
+      else
+        members.filter(m => m.dataCenter == cluster.selfMember.dataCenter)
+    if (members.isEmpty) None else Some(selectableMembers(ThreadLocalRandom.current nextInt selectableMembers.size).address)
+  }
+  
   def replica(address: Address): ActorSelection =
     context.actorSelection(self.path.toStringWithAddress(address))
 
   def receiveStatus(otherDigests: Map[KeyId, Digest], chunk: Int, totChunks: Int): Unit = {
     if (log.isDebugEnabled)
       log.debug("Received gossip status from [{}], chunk [{}] of [{}] containing [{}]", replyTo.path.address,
-        (chunk + 1), totChunks, otherDigests.keys.mkString(", "))
+        chunk + 1, totChunks, otherDigests.keys.mkString(", "))
 
     def isOtherDifferent(key: KeyId, otherDigest: Digest): Boolean = {
       val d = getDigest(key)
@@ -1726,14 +1742,14 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
 
   def receiveWeaklyUpMemberUp(m: Member): Unit =
     if (matchingRole(m) && m.address != selfAddress)
-      weaklyUpNodes += m.address
+      weaklyUpNodes += m
 
   def receiveMemberUp(m: Member): Unit =
     if (matchingRole(m)) {
       leader += m
       if (m.address != selfAddress) {
-        nodes += m.address
-        weaklyUpNodes -= m.address
+        nodes += m
+        weaklyUpNodes -= m
       }
     }
 
@@ -1743,11 +1759,11 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
     else if (matchingRole(m)) {
       // filter, it's possible that the ordering is changed since it based on MemberStatus
       leader = leader.filterNot(_.uniqueAddress == m.uniqueAddress)
-      nodes -= m.address
-      weaklyUpNodes -= m.address
+      nodes -= m
+      weaklyUpNodes -= m
       log.debug("adding removed node [{}] from MemberRemoved", m.uniqueAddress)
       removedNodes = removedNodes.updated(m.uniqueAddress, allReachableClockTime)
-      unreachable -= m.address
+      unreachable -= m
       deltaPropagationSelector.cleanupRemovedNode(m.address)
     }
   }
@@ -1760,10 +1776,10 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
     }
 
   def receiveUnreachable(m: Member): Unit =
-    if (matchingRole(m)) unreachable += m.address
+    if (matchingRole(m)) unreachable += m
 
   def receiveReachable(m: Member): Unit =
-    if (matchingRole(m)) unreachable -= m.address
+    if (matchingRole(m)) unreachable -= m
 
   def receiveClockTick(): Unit = {
     val now = System.nanoTime()
@@ -1785,11 +1801,11 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
   }
 
   def collectRemovedNodes(): Unit = {
-    val knownNodes = nodes union weaklyUpNodes union removedNodes.keySet.map(_.address)
+    val knownNodes = nodes.map(_.uniqueAddress) union weaklyUpNodes.map(_.uniqueAddress) union removedNodes.keySet
     val newRemovedNodes =
       dataEntries.foldLeft(Set.empty[UniqueAddress]) {
         case (acc, (_, (envelope @ DataEnvelope(data: RemovedNodePruning, _, _), _))) ⇒
-          acc union data.modifiedByNodes.filterNot(n ⇒ n == selfUniqueAddress || knownNodes(n.address))
+          acc union data.modifiedByNodes.filterNot(n ⇒ n == selfUniqueAddress || knownNodes(n))
         case (acc, _) ⇒
           acc
       }
@@ -1803,7 +1819,7 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
   def initRemovedNodePruning(): Unit = {
     // initiate pruning for removed nodes
     val removedSet: Set[UniqueAddress] = removedNodes.collect {
-      case (r, t) if ((allReachableClockTime - t) > maxPruningDisseminationNanos) ⇒ r
+      case (r, t) if allReachableClockTime - t > maxPruningDisseminationNanos ⇒ r
     }(collection.breakOut)
 
     if (removedSet.nonEmpty) {
@@ -1832,7 +1848,7 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
 
   def performRemovedNodePruning(): Unit = {
     // perform pruning when all seen Init
-    val allNodes = nodes union weaklyUpNodes
+    val allNodes = nodes.map(_.address) union weaklyUpNodes.map(_.address)
     val pruningPerformed = PruningPerformed(System.currentTimeMillis() + pruningMarkerTimeToLive.toMillis)
     val durablePruningPerformed = PruningPerformed(System.currentTimeMillis() + durablePruningMarkerTimeToLive.toMillis)
     dataEntries.foreach {
@@ -1902,26 +1918,26 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
   import ReadWriteAggregator._
 
   def timeout: FiniteDuration
-  def nodes: Set[Address]
-  def unreachable: Set[Address]
-  def reachableNodes: Set[Address] = nodes diff unreachable
+  def nodes: Set[Member]
+  def unreachable: Set[Member]
+  def reachableNodes: Set[Member] = nodes diff unreachable
 
   import context.dispatcher
   var sendToSecondarySchedule = context.system.scheduler.scheduleOnce(timeout / 5, self, SendToSecondary)
   var timeoutSchedule = context.system.scheduler.scheduleOnce(timeout, self, ReceiveTimeout)
 
-  var remaining = nodes
+  var remaining = nodes.map(_.address)
 
   def doneWhenRemainingSize: Int
 
   lazy val (primaryNodes, secondaryNodes) = {
     val primarySize = nodes.size - doneWhenRemainingSize
     if (primarySize >= nodes.size)
-      (nodes, Set.empty[Address])
+      (nodes.map(_.address), Set.empty[Address])
     else {
       // Prefer to use reachable nodes over the unreachable nodes first
       val orderedNodes = scala.util.Random.shuffle(reachableNodes.toVector) ++ scala.util.Random.shuffle(unreachable.toVector)
-      val (p, s) = orderedNodes.splitAt(primarySize)
+      val (p, s) = orderedNodes.map(_.address).splitAt(primarySize)
       (p, s.take(MaxSecondaryNodes))
     }
   }
@@ -1946,8 +1962,8 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
     delta:       Option[Replicator.Internal.Delta],
     consistency: Replicator.WriteConsistency,
     req:         Option[Any],
-    nodes:       Set[Address],
-    unreachable: Set[Address],
+    nodes:       Set[Member],
+    unreachable: Set[Member],
     replyTo:     ActorRef,
     durable:     Boolean): Props =
     Props(new WriteAggregator(key, envelope, delta, consistency, req, nodes, unreachable, replyTo, durable))
@@ -1963,8 +1979,8 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
   delta:                    Option[Replicator.Internal.Delta],
   consistency:              Replicator.WriteConsistency,
   req:                      Option[Any],
-  override val nodes:       Set[Address],
-  override val unreachable: Set[Address],
+  override val nodes:       Set[Member],
+  override val unreachable: Set[Member],
   replyTo:                  ActorRef,
   durable:                  Boolean) extends ReadWriteAggregator {
 
@@ -2073,8 +2089,8 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
     key:         KeyR,
     consistency: Replicator.ReadConsistency,
     req:         Option[Any],
-    nodes:       Set[Address],
-    unreachable: Set[Address],
+    nodes:       Set[Member],
+    unreachable: Set[Member],
     localValue:  Option[Replicator.Internal.DataEnvelope],
     replyTo:     ActorRef): Props =
     Props(new ReadAggregator(key, consistency, req, nodes, unreachable, localValue, replyTo))
@@ -2089,8 +2105,8 @@ final class Replicator(settings: ReplicatorSettings) extends Actor with ActorLog
   key:                      KeyR,
   consistency:              Replicator.ReadConsistency,
   req:                      Option[Any],
-  override val nodes:       Set[Address],
-  override val unreachable: Set[Address],
+  override val nodes:       Set[Member],
+  override val unreachable: Set[Member],
   localValue:               Option[Replicator.Internal.DataEnvelope],
   replyTo:                  ActorRef) extends ReadWriteAggregator {
 
